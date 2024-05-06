@@ -1,5 +1,6 @@
+import fs from "fs";
 import prompt from "prompt";
-import { Builder, By, Key, until, Select } from "selenium-webdriver";
+import { Builder, By, until, Select } from "selenium-webdriver";
 
 const start = async () => {
   console.log("🚀 Starting the process...");
@@ -84,31 +85,116 @@ const start = async () => {
       });
     });
 
-    let fromData = await driver.findElement(By.id("txtMarkDate_From"));
-    await fromData.sendKeys(promptData.fromDate || "12/1/2023");
+    let studentIds = [];
+    let useSavedIds = false;
+    let useSavedChallanData = false;
 
-    let toData = await driver.findElement(By.id("txtMarkDate_To"));
-    await toData.sendKeys(promptData.toDate || "12/1/2024");
+    console.log("💾 Do you have a file with student IDs? (yes/no/skip)");
 
-    await driver.findElement(By.id("btnShow")).click();
+    await new Promise((resolve, reject) => {
+      prompt.get("useSavedIds", (err, result) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        if (result.useSavedIds.toLowerCase() === "yes") {
+          useSavedIds = true;
+          resolve();
+        } else if (result.useSavedIds.toLowerCase() === "skip") {
+          useSavedIds = result.useSavedIds.toLowerCase();
+          resolve();
+        } else {
+          resolve();
+        }
+      });
+    });
 
-    let dropDown = await driver.findElement(By.id("ddlRecords"));
-    let select = new Select(dropDown);
+    if (useSavedIds !== "skip") {
+      if (useSavedIds) {
+        console.log("📁 Please provide the path to the file:");
+        await new Promise((resolve, reject) => {
+          prompt.get("filePath", (err, result) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            try {
+              studentIds = JSON.parse(fs.readFileSync(result.filePath));
+              console.log(
+                `✅ Student IDs loaded from file: ${result.filePath}`
+              );
+            } catch (error) {
+              console.error("❌ Error reading file:", error.message);
+            }
+            resolve();
+          });
+        });
+      } else {
+        let fromData = await driver.findElement(By.id("txtMarkDate_From"));
+        await fromData.sendKeys(promptData.fromDate || "12/1/2023");
 
-    console.log("🔍 Searching for students...");
+        let toData = await driver.findElement(By.id("txtMarkDate_To"));
+        await toData.sendKeys(promptData.toDate || "12/1/2024");
 
-    await select.selectByValue("1000");
+        await driver.findElement(By.id("btnShow")).click();
 
-    let sort = await driver.findElement(
-      By.xpath("//th[@scope='col']/a[contains(@href,'Sort$IsMarked')]")
-    );
-    await sort.click();
+        let dropDown = await driver.findElement(By.id("ddlRecords"));
+        let select = new Select(dropDown);
 
-    let rows = await driver.findElements(By.css("#gvShow tbody tr"));
+        console.log("🔍 Searching for students...");
 
-    let studentIds = await RowsMap(rows);
+        await select.selectByValue("1000");
 
-    let challan = await StudentAccountBook(driver, studentIds);
+        let sort = await driver.findElement(
+          By.xpath("//th[@scope='col']/a[contains(@href,'Sort$IsMarked')]")
+        );
+        await sort.click();
+
+        let rows = await driver.findElements(By.css("#gvShow tbody tr"));
+        studentIds = await RowsMap(rows);
+      }
+    }
+    if (useSavedIds !== "skip") {
+      console.log("💾 Do you have a file with challanData? (yes/no)");
+
+      await new Promise((resolve, reject) => {
+        prompt.get("useSavedChallanData", (err, result) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          if (result.useSavedChallanData.toLowerCase() === "yes") {
+            useSavedChallanData = true;
+            resolve();
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+
+    let challan;
+
+    if (!useSavedChallanData && useSavedIds !== "skip") {
+      challan = await StudentAccountBook(driver, studentIds);
+    } else {
+      console.log("📁 Please provide the path to the challanfile:");
+      await new Promise((resolve, reject) => {
+        prompt.get("filePath", (err, result) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          try {
+            challan = JSON.parse(fs.readFileSync(result.filePath));
+            console.log(`✅ Student IDs loaded from file: ${result.filePath}`);
+          } catch (error) {
+            console.error("❌ Error reading file:", error.message);
+          }
+          resolve();
+        });
+      });
+    }
 
     await MarkChallan(driver, challan);
 
@@ -126,30 +212,48 @@ start();
 
 const RowsMap = async (rows) => {
   let studentIds = [];
+  let hasChecked = false;
+  let encounteredIds = new Set();
 
-  await Promise.all(
-    rows.map(async (row, index) => {
-      if (index !== 0) {
-        try {
-          let lastTd = await row.findElement(By.xpath("./td[last()]/span/img"));
+  for (const row of rows) {
+    try {
+      let lastTd = await row.findElement(By.xpath("./td[last()]/span/img"));
+      let imgSrc = await lastTd.getAttribute("src");
 
-          let imgSrc = await lastTd.getAttribute("src");
-
-          if (imgSrc === "https://campus.vu.edu.pk/Images/cross.png") {
-            let studentIdElement = await row.findElement(
-              By.xpath("./td[3]/span")
-            );
-            let studentId = await studentIdElement.getText();
-            studentIds.push(studentId);
-          }
-        } catch (error) {
-          console.log("❌ Error in row", index, ":", error.message);
+      if (imgSrc === "https://campus.vu.edu.pk/Images/cross.png") {
+        let studentIdElement = await row.findElement(By.xpath("./td[3]/span"));
+        let studentId = await studentIdElement.getText();
+        // Check if studentId already encountered
+        if (!encounteredIds.has(studentId)) {
+          studentIds.push(studentId);
+          encounteredIds.add(studentId); // Add to encountered set
+          console.log(`👀 Found student ID ${studentId}`);
         }
+      } else if (imgSrc === "https://campus.vu.edu.pk/Images/check.png") {
+        hasChecked = true;
+        break;
       }
-    })
-  );
+    } catch (error) {
+      console.log("❌ Error processing row:", error.message);
+    }
+  }
 
-  return studentIds;
+  if (hasChecked) {
+    console.log("✅ Found student with check, moving to the next step...");
+    console.log(`✅ Found ${studentIds.length} students`);
+    console.log("💾 Saving student IDs to file...");
+
+    try {
+      fs.writeFileSync("studentIds.json", JSON.stringify(studentIds));
+      console.log("✅ Student IDs saved to file: studentIds.json");
+    } catch (error) {
+      console.error("❌ Error saving file:", error.message);
+    }
+    return studentIds;
+  } else {
+    console.log("✅ All students processed, moving to the next step...");
+    return studentIds;
+  }
 };
 
 const StudentAccountBook = async (driver, studentIds) => {
@@ -192,10 +296,11 @@ const StudentAccountBook = async (driver, studentIds) => {
 
   for (const studentId of studentIds) {
     let input = await driver.findElement(By.id("txtstudentid"));
+    let btnShow = await driver.findElement(By.id("btnshow"));
     await input.clear();
     await input.sendKeys(studentId);
 
-    await driver.findElement(By.id("btnshow")).click();
+    await btnShow.click();
 
     try {
       // Wait for the table to load
@@ -217,22 +322,28 @@ const StudentAccountBook = async (driver, studentIds) => {
         );
         let voucherPeriod = await voucherPeriodElement.getText();
 
-        let paidDateElement = await row.findElement(By.xpath("./td[9]/span"));
-
         // Check if voucher period matches and the payment is unpaid
         if (voucherPeriod === settings.date) {
           challanData.push({
             studentId: studentId,
             challanId: challanId,
           });
+          console.log(
+            `✅ Found challan for student ${studentId} - Challan ID: ${challanId}`
+          );
         }
       }
     } catch (error) {
-      console.log(
-        `❌ Error processing student ID ${studentId}: ${error.message}`
-      );
+      console.log(`❌ Error finding challan for student ID ${studentId}`);
       continue; // Move to the next student ID
     }
+  }
+
+  try {
+    fs.writeFileSync("challanData.json", JSON.stringify(challanData));
+    console.log("✅ challanData saved to file: challanData.json");
+  } catch (error) {
+    console.error("❌ Error saving file:", error.message);
   }
 
   return challanData;
@@ -259,8 +370,13 @@ const MarkChallan = async (driver, challan) => {
     });
   });
 
-  for (const challanItem of challan) {
-    let { studentId, challanId } = challanItem;
+  for (let i = 0; i < challan.length; i++) {
+    let { studentId, challanId } = challan[i];
+    console.log(
+      `🔍 Marking challan for student ${i + 1} of ${
+        challan.length
+      }: ID ${studentId}, Challan ID ${challanId}`
+    );
 
     let studentIdInput = await driver.findElement(By.id("txtStudentId"));
     await studentIdInput.clear();
